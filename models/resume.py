@@ -1,5 +1,6 @@
 import datetime
 import uuid
+from typing import Optional
 from sqlalchemy import Column, String, DateTime, Boolean
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.sql import func
@@ -14,6 +15,11 @@ class ResumeMetadata(SQLModel, table=True):
     resume_hash: str = Field(sa_column=Column(String, unique=True, index=True, nullable=False))
     created_at: datetime.datetime = Field(default_factory=datetime.datetime.utcnow, sa_column=Column(DateTime(timezone=True), server_default=func.now()))
     embeddings_created: bool = Field(default=False, sa_column=Column(Boolean, default=False))
-
+    skills: Optional[str]
+    experience_level: Optional[str]
+    years_of_experience: Optional[int]
+    resume_summary: Optional[str]
+    analysis_status: str = "pending"
+    
     def __repr__(self):
         return f"<ResumeMetadata(file_name='{self.file_name}', user_id='{self.user_id}')>"

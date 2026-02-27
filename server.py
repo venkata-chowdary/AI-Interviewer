@@ -1,4 +1,4 @@
-from fastapi import FastAPI, UploadFile, File, Depends, HTTPException
+from fastapi import FastAPI, UploadFile, File, Depends, Form, HTTPException
 import os
 import hashlib
 from tempfile import NamedTemporaryFile
@@ -10,6 +10,7 @@ from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_qdrant import QdrantVectorStore
 from embeddings import embeddings_model
+from ai.service import analyse_resume
 
 app = FastAPI()
 
@@ -22,9 +23,10 @@ app.include_router(auth_router)
 def read_root():
     return {"Hello": "World"}
 
+from fastapi import BackgroundTasks
 
 @app.post("/upload-resume")
-async def upload_resume(file: UploadFile = File(...), session: AsyncSession = Depends(get_session)):
+async def upload_resume(background_task: BackgroundTasks, user_id: str = Form(...), file: UploadFile = File(...), session: AsyncSession = Depends(get_session)):
     if not file.filename.endswith(".pdf"):
         raise HTTPException(status_code=400, detail="Only PDF files are allowed.")
     
@@ -38,7 +40,7 @@ async def upload_resume(file: UploadFile = File(...), session: AsyncSession = De
         raise HTTPException(status_code=400, detail="Resume already exists.")
 
     new_resume=ResumeMetadata(
-        user_id="dummy_user_id",
+        user_id=user_id,
         file_name=file.filename,
         resume_hash=file_hash
     )
@@ -57,7 +59,7 @@ async def upload_resume(file: UploadFile = File(...), session: AsyncSession = De
         docs = loader.load()
 
         for doc in docs:
-            doc.metadata["user_id"] = "dummy_user_id"
+            doc.metadata["user_id"] = user_id
             doc.metadata["resume_id"] = str(new_resume.id)
 
         text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100)
@@ -71,6 +73,9 @@ async def upload_resume(file: UploadFile = File(...), session: AsyncSession = De
         )
         print("Embeddings created and stored in Qdrant")
 
+        full_text = "\n".join([doc.page_content for doc in docs])
+        background_task.add_task(analyse_resume, new_resume.id, full_text)
+
     except Exception as e:
         await session.rollback()
         raise HTTPException(status_code=500, detail=f"Error processing and indexing resume: {str(e)}")
@@ -79,7 +84,5 @@ async def upload_resume(file: UploadFile = File(...), session: AsyncSession = De
             os.remove(tmp_path)
 
     return {"message": "Resume processed and indexed successfully.", "resume_id": new_resume.id}
-
-
 
     

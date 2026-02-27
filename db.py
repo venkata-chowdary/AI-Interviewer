@@ -33,5 +33,6 @@ async def get_session() -> AsyncSession:
 # Initialize tables
 async def init_db():
     from models.resume import ResumeMetadata
+    from auth.models import User
     async with engine.begin() as conn:
         await conn.run_sync(SQLModel.metadata.create_all)

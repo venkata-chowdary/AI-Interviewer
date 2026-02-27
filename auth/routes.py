@@ -31,7 +31,7 @@ from fastapi.security import OAuth2PasswordRequestForm
 async def login(form_data: OAuth2PasswordRequestForm = Depends(), session: AsyncSession = Depends(get_session)):
     stmt = select(User).where(User.email == form_data.username) 
     result = await session.exec(stmt)
-    user = result.scalars().first()
+    user = result.first()
 
     if not user or not verify_password(form_data.password, user.hased_password):
         raise HTTPException(status_code=401, detail="Invalid credentials")
