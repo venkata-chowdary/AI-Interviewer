@@ -42,8 +42,10 @@ Resume text:
             
             structured_llm = model.with_structured_output(ResumeAnalysis)
             
+            from langchain_core.messages import HumanMessage
             messages = [
                 SystemMessage(content=SYSTEM_PROMPT),
+                HumanMessage(content="Please provide the structured analysis of the resume."),
             ]
             
             analysis = await structured_llm.ainvoke(messages)
@@ -58,7 +60,9 @@ Resume text:
             await session.commit()
             
         except Exception as e:
+            import traceback
             print(f"Error analyzing resume: {e}")
+            traceback.print_exc()
             resume.analysis_status = "failed"
             session.add(resume)
             await session.commit()

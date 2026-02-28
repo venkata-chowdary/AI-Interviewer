@@ -12,7 +12,7 @@ async def main():
         new_resume = ResumeMetadata(
             user_id="test_user_ai",
             file_name="dummy.pdf",
-            resume_hash="dummy_hash_12345"
+            resume_hash=str(uuid4())
         )
         session.add(new_resume)
         await session.commit()
