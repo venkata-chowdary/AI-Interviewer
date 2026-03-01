@@ -24,11 +24,17 @@ async def analyse_resume(resume_id: UUID, resume_text: str):
         await session.refresh(resume)
 
         SYSTEM_PROMPT = f"""
-Analyze the following resume and extract:
-- Technical skills
-- Experience level (entry, mid, senior)
-- Estimated years of experience
-- A short professional summary
+You are an expert technical recruiter and resume analyst.
+Your task is to thoroughly analyze the provided candidate resume and reliably extract structured professional information.
+
+Please extract the following data points with high accuracy:
+1. Technical skills: Extract all relevant technical hard skills (e.g., programming languages, frameworks, databases, cloud providers, tools). Normalize the names where appropriate (e.g., "React.js" to "React").
+2. Experience level: Categorize the candidate as strictly one of: 'entry', 'mid', or 'senior'. 
+   - Entry: 0-2 years
+   - Mid: 3-5 years
+   - Senior: 6+ years
+3. Estimated years of experience: Calculate the total years of professional experience based on the dates provided in the work history. If explicit dates are missing, make your best conservative estimate based on the content. Return as an integer.
+4. Professional summary: Write a concise, impactful 2-3 sentence summary highlighting the candidate's core expertise, primary domain, and standout achievements. Do not simply copy their summary verbatim; synthesize it into a recruiter-friendly format.
 
 Resume text:
 {resume_text}
@@ -36,7 +42,7 @@ Resume text:
 
         try:
             model = ChatGoogleGenerativeAI(
-                model="gemini-2.5-flash",
+                model="gemini-3-flash-preview",
                 temperature=0.0
             )
             

@@ -12,8 +12,17 @@ from langchain_qdrant import QdrantVectorStore
 from embeddings import embeddings_model
 from ai.service import analyse_resume
 
+from fastapi.middleware.cors import CORSMiddleware
+
 app = FastAPI()
 
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 from auth.routes import router as auth_router
 app.include_router(auth_router)
 
@@ -25,8 +34,15 @@ def read_root():
 
 from fastapi import BackgroundTasks
 
+from auth.security import get_current_user_id
+
 @app.post("/upload-resume")
-async def upload_resume(background_task: BackgroundTasks, user_id: str = Form(...), file: UploadFile = File(...), session: AsyncSession = Depends(get_session)):
+async def upload_resume(
+    background_task: BackgroundTasks, 
+    file: UploadFile = File(...), 
+    user_id: str = Depends(get_current_user_id),
+    session: AsyncSession = Depends(get_session)
+):
     if not file.filename.endswith(".pdf"):
         raise HTTPException(status_code=400, detail="Only PDF files are allowed.")
     
@@ -73,6 +89,11 @@ async def upload_resume(background_task: BackgroundTasks, user_id: str = Form(..
         )
         print("Embeddings created and stored in Qdrant")
 
+        # Update the database to reflect that embeddings were successfully created
+        new_resume.embeddings_created = True
+        session.add(new_resume)
+        await session.commit()
+
         full_text = "\n".join([doc.page_content for doc in docs])
         background_task.add_task(analyse_resume, new_resume.id, full_text)
 
@@ -84,5 +105,23 @@ async def upload_resume(background_task: BackgroundTasks, user_id: str = Form(..
             os.remove(tmp_path)
 
     return {"message": "Resume processed and indexed successfully.", "resume_id": new_resume.id}
+
+@app.get("/api/resume/me")
+async def get_my_resume(
+    user_id: str = Depends(get_current_user_id),
+    session: AsyncSession = Depends(get_session)
+):
+    # Fetch the most recent resume for this user by ordering by created_at desc
+    result = await session.exec(
+        select(ResumeMetadata)
+        .where(ResumeMetadata.user_id == user_id)
+        .order_by(ResumeMetadata.created_at.desc())
+    )
+    resume = result.first()
+    
+    if not resume:
+        raise HTTPException(status_code=404, detail="No resume found for this user.")
+        
+    return resume
 
     
