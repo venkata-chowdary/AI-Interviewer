@@ -5,7 +5,7 @@ from tempfile import NamedTemporaryFile
 from sqlmodel.ext.asyncio.session import AsyncSession
 from sqlmodel import select
 from db import get_session
-from models import ResumeMetadata
+from models import ResumeMetadata, Interview
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_qdrant import QdrantVectorStore
@@ -84,7 +84,8 @@ async def upload_resume(
         vector_store=QdrantVectorStore.from_documents(
             documents=chunks,
             embedding=embeddings_model,
-            url="http://localhost:6333",
+            url=os.getenv("QDRANT_URL", "https://404d86ae-5bcf-4b02-ba12-abbab2ed350c.sa-east-1-0.aws.cloud.qdrant.io:6333"),
+            api_key=os.getenv("QDRANT_API_KEY", "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJhY2Nlc3MiOiJtIn0.6Eow570SBDAb2qMx0QWGrdvhjBOSVUhRKq5deDM22Qs"),
             collection_name="resume_collection"
         )
         print("Embeddings created and stored in Qdrant")
@@ -118,10 +119,65 @@ async def get_my_resume(
         .order_by(ResumeMetadata.created_at.desc())
     )
     resume = result.first()
-    
     if not resume:
         raise HTTPException(status_code=404, detail="No resume found for this user.")
         
     return resume
 
+@app.get("/api/resumes")
+async def get_all_resumes(
+    user_id: str = Depends(get_current_user_id),
+    session: AsyncSession = Depends(get_session)
+):
+    # Fetch all resumes for this user, ordered by most recent
+    result = await session.exec(
+        select(ResumeMetadata)
+        .where(ResumeMetadata.user_id == user_id)
+        .order_by(ResumeMetadata.created_at.desc())
+    )
+    resumes = result.all()
     
+    return resumes
+
+from pydantic import BaseModel
+import uuid
+
+class StartInterviewRequest(BaseModel):
+    resume_id: str
+    role: str
+    difficulty: str
+    duration: int
+
+@app.post("/api/interview/start")
+async def start_interview(
+    payload: StartInterviewRequest, #payload schema
+    user_id: str = Depends(get_current_user_id), #current user id
+    session: AsyncSession = Depends(get_session) #db session
+):
+    print(f"Received start interview payload: {payload}")
+
+    difficulty_map={
+        "easy":"2",
+        "medium":"3",
+        "hard": "5"
+    }
+
+    number_of_questions_map = {
+        10:5,
+        20:8,
+        30: 10
+    }
+
+    new_interview=Interview(
+        user_id=user_id,
+        resume_id=payload.resume_id,
+        role= payload.role,
+        difficulty_band = difficulty_map[payload.difficulty],
+        total_questions= number_of_questions_map[payload.duration],
+        status="inactive"
+    )
+    session.add(new_interview)
+    await session.commit()
+    await session.refresh(new_interview)
+    print("interview created", new_interview.id)
+    return {"session_id": new_interview.id, "message": "Interview session created"}

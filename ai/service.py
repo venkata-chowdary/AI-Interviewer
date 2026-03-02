@@ -43,7 +43,7 @@ Resume text:
         try:
             model = ChatGoogleGenerativeAI(
                 model="gemini-3-flash-preview",
-                temperature=0.0
+                temperature=0.7
             )
             
             structured_llm = model.with_structured_output(ResumeAnalysis)
