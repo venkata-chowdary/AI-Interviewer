@@ -168,6 +168,11 @@ async def start_interview(
         30: 10
     }
 
+    qdrant_client = QdrantClient(
+        url=os.getenv("QDRANT_URL"),
+        api_key=os.getenv("QDRANT_API_KEY")
+    )
+
     new_interview=Interview(
         user_id=user_id,
         resume_id=payload.resume_id,

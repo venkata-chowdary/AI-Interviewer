@@ -12,12 +12,14 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 if not DATABASE_URL:
     raise ValueError("DATABASE_URL not set in .env")
 
-# Async Engine with SSL
+from sqlalchemy.pool import NullPool
+
+# Async Engine with SSL and NullPool for script runner compatibility
 engine = create_async_engine(
     DATABASE_URL,
-    echo=True,
+    echo=False,
     connect_args={"ssl": True},
-    pool_pre_ping=True, 
+    poolclass=NullPool,
 )
 
 # Async Session factory
@@ -35,5 +37,6 @@ async def init_db():
     from models.resume import ResumeMetadata
     from auth.models import User
     from models.interview import Interview
+    from models.question import Question
     async with engine.begin() as conn:
         await conn.run_sync(SQLModel.metadata.create_all)
