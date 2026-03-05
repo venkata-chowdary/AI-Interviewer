@@ -6,9 +6,12 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 from sqlmodel import select
 from db import get_session
 from models import ResumeMetadata, Interview
+from models.question import Question
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_qdrant import QdrantVectorStore
+from qdrant_client import QdrantClient
+from qdrant_client.http import models
 from embeddings import embeddings_model
 from ai.service import analyse_resume
 
@@ -156,33 +159,86 @@ async def start_interview(
 ):
     print(f"Received start interview payload: {payload}")
 
-    difficulty_map={
-        "easy":"2",
-        "medium":"3",
-        "hard": "5"
+    # Map text difficulty to integer rating based on out.json
+    difficulty_map = {
+        "very basic": 1,
+        "easy": 2,
+        "medium": 3,
+        "hard": 4,
+        "expert": 5
     }
 
     number_of_questions_map = {
-        10:5,
-        20:8,
+        10: 5,
+        20: 8,
         30: 10
     }
 
-    qdrant_client = QdrantClient(
+    # Fetch the user's resume to get skills
+    resume = await session.get(ResumeMetadata, payload.resume_id)
+    if not resume:
+        raise HTTPException(status_code=404, detail="Resume not found")
+        
+    skills_context = resume.skills if resume.skills else ""
+
+    # Formulate the search query by combining role and skills to match seed format
+    search_query = f"Topic/Technology: {payload.role}. Skills: {skills_context}"
+    print(f"Generating questions using semantic query: '{search_query}'")
+
+    qdrant = QdrantVectorStore.from_existing_collection(
+        embedding=embeddings_model,
+        collection_name="questions",
         url=os.getenv("QDRANT_URL"),
         api_key=os.getenv("QDRANT_API_KEY")
     )
 
-    new_interview=Interview(
+    try:
+        limit = number_of_questions_map.get(payload.duration, 5)
+        difficulty_int = difficulty_map.get(payload.difficulty.lower(), 3)
+        
+        filter_qdrant = models.Filter(
+            must=[models.FieldCondition(key="difficulty_level", match=models.MatchValue(value=difficulty_int))]
+        )
+        # We perform semantic search without an embedding vector here if using Langchain wrapper
+        # The from_existing_collection uses the Langchain abstraction `similarity_search`
+        search_result = qdrant.similarity_search(query=search_query, k=limit, filter=filter_qdrant)
+        print("seach result:", search_result)
+        # The points from similarity_search return Langchain Documents where metadata usually stores IDs
+        question_ids = []
+        for doc in search_result:
+             # Look for the question_id we put in the payload
+             qid = doc.metadata.get("question_id") or doc.metadata.get("_id")
+             if qid:
+                 question_ids.append(qid)
+        print(f"Found {len(question_ids)} questions: {question_ids}")
+        
+    except Exception as e:
+        print(f"Qdrant Search Error: {e}")
+        raise HTTPException(status_code=500, detail="Error fetching questions from database")
+
+    # Create the interview session
+    new_interview = Interview(
         user_id=user_id,
         resume_id=payload.resume_id,
-        role= payload.role,
-        difficulty_band = difficulty_map[payload.difficulty],
-        total_questions= number_of_questions_map[payload.duration],
-        status="inactive"
+        role=payload.role,
+        difficulty=payload.difficulty,
+        duration=payload.duration,
+        questions=question_ids, # Attached Qdrant question IDs
+        status="active"
     )
-    session.add(new_interview)
-    await session.commit()
-    await session.refresh(new_interview)
+    #displaying those uqesions
+    for qid in question_ids:
+        question = await session.get(Question, qid)
+        if question:
+            print(question)
+    
+    # session.add(new_interview)
+    # await session.commit()
+    # await session.refresh(new_interview)
+    
     print("interview created", new_interview.id)
-    return {"session_id": new_interview.id, "message": "Interview session created"}
+    return {
+        "session_id": new_interview.id, 
+        "message": "Interview session created",
+        "question_ids": question_ids
+    }

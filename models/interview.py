@@ -1,7 +1,7 @@
 import datetime
 import uuid
 from typing import Optional, List
-from sqlalchemy import Column, String, DateTime, Integer, Float, Text
+from sqlalchemy import Column, String, DateTime, Integer, Float, Text, JSON
 from sqlalchemy.dialects.postgresql import UUID, ARRAY
 from sqlalchemy.sql import func
 from sqlmodel import SQLModel, Field
@@ -17,7 +17,7 @@ class Interview(SQLModel, table=True):
     duration: Optional[int] = Field(default=None, sa_column=Column(Integer))
     questions: Optional[List[str]] = Field(default=[], sa_column=Column(ARRAY(String)))
     marks: Optional[float] = Field(default=None, sa_column=Column(Float))
-    performance_report: Optional[str] = Field(default=None, sa_column=Column(Text))
+    performance_report: Optional[dict] = Field(default=None, sa_column=Column(JSON))
     selected_status: Optional[str] = Field(default=None, sa_column=Column(String))
     time_taken: Optional[int] = Field(default=None, sa_column=Column(Integer))
     status: str = Field(default="active", sa_column=Column(String, default="active"))

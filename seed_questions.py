@@ -97,9 +97,10 @@ async def main():
 
             logger.info(f"Generating embedding for question {idx+1}/{len(questions_data)} (ID: {question_id_str})")
             
-            # Generate Embedding
-            text_to_embed = db_question.question_text
+            # Generate Embedding with a slight delay to respect free-tier rate limits
+            text_to_embed = f"Topic/Technology: {db_question.topic}. Skills: {db_question.primary_skill}, {', '.join(db_question.secondary_skill)}. Question: {db_question.question_text}"
             embedding = embeddings_model.embed_query(text_to_embed)
+            await asyncio.sleep(1.5) # Prevent rate limiting freeze
 
             # Prepare Qdrant Payload
             payload = {
@@ -110,7 +111,8 @@ async def main():
                 "difficulty_level": q_data["difficulty_level"],
                 "primary_skill": q_data["primary_skill"],
                 "secondary_skills": q_data.get("secondary_skills", []),
-                "max_score": q_data["max_score"]
+                "max_score": q_data["max_score"],
+                "scoring_guidelines": q_data.get("scoring_guidelines", {})
             }
 
             # Create PointStruct
