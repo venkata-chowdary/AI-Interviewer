@@ -57,6 +57,18 @@ async def main():
         vectors_config=VectorParams(size=VECTOR_SIZE, distance=Distance.COSINE),
     )
 
+    logger.info("Creating payload indices for 'domain' and 'difficulty_level'...")
+    qdrant_client.create_payload_index(
+        collection_name=COLLECTION_NAME,
+        field_name="domain",
+        field_schema="keyword",
+    )
+    qdrant_client.create_payload_index(
+        collection_name=COLLECTION_NAME,
+        field_name="difficulty_level",
+        field_schema="integer",
+    )
+
     points_to_upsert = []
 
     # 4. Insert into Postgres and Prepare Qdrant Payloads

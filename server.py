@@ -148,7 +148,7 @@ import uuid
 class StartInterviewRequest(BaseModel):
     resume_id: str
     role: str
-    difficulty: str
+    difficulty_level: str
     duration: int
 
 @app.post("/api/interview/start")
@@ -157,88 +157,143 @@ async def start_interview(
     user_id: str = Depends(get_current_user_id), #current user id
     session: AsyncSession = Depends(get_session) #db session
 ):
-    print(f"Received start interview payload: {payload}")
-
-    # Map text difficulty to integer rating based on out.json
-    difficulty_map = {
-        "very basic": 1,
-        "easy": 2,
-        "medium": 3,
-        "hard": 4,
-        "expert": 5
-    }
-
-    number_of_questions_map = {
-        10: 5,
-        20: 8,
-        30: 10
-    }
-
-    # Fetch the user's resume to get skills
-    resume = await session.get(ResumeMetadata, payload.resume_id)
-    if not resume:
-        raise HTTPException(status_code=404, detail="Resume not found")
-        
-    skills_context = resume.skills if resume.skills else ""
-
-    # Formulate the search query by combining role and skills to match seed format
-    search_query = f"Topic/Technology: {payload.role}. Skills: {skills_context}"
-    print(f"Generating questions using semantic query: '{search_query}'")
-
-    qdrant = QdrantVectorStore.from_existing_collection(
-        embedding=embeddings_model,
-        collection_name="questions",
-        url=os.getenv("QDRANT_URL"),
-        api_key=os.getenv("QDRANT_API_KEY")
-    )
-
     try:
-        limit = number_of_questions_map.get(payload.duration, 5)
-        difficulty_int = difficulty_map.get(payload.difficulty.lower(), 3)
-        
-        filter_qdrant = models.Filter(
-            must=[models.FieldCondition(key="difficulty_level", match=models.MatchValue(value=difficulty_int))]
-        )
-        # We perform semantic search without an embedding vector here if using Langchain wrapper
-        # The from_existing_collection uses the Langchain abstraction `similarity_search`
-        search_result = qdrant.similarity_search(query=search_query, k=limit, filter=filter_qdrant)
-        print("seach result:", search_result)
-        # The points from similarity_search return Langchain Documents where metadata usually stores IDs
-        question_ids = []
-        for doc in search_result:
-             # Look for the question_id we put in the payload
-             qid = doc.metadata.get("question_id") or doc.metadata.get("_id")
-             if qid:
-                 question_ids.append(qid)
-        print(f"Found {len(question_ids)} questions: {question_ids}")
-        
-    except Exception as e:
-        print(f"Qdrant Search Error: {e}")
-        raise HTTPException(status_code=500, detail="Error fetching questions from database")
+        print(f"Received start interview payload: {payload}")
 
-    # Create the interview session
-    new_interview = Interview(
-        user_id=user_id,
-        resume_id=payload.resume_id,
-        role=payload.role,
-        difficulty=payload.difficulty,
-        duration=payload.duration,
-        questions=question_ids, # Attached Qdrant question IDs
-        status="active"
-    )
-    #displaying those uqesions
-    for qid in question_ids:
-        question = await session.get(Question, qid)
-        if question:
-            print(question)
-    
-    # session.add(new_interview)
-    # await session.commit()
-    # await session.refresh(new_interview)
-    
-    print("interview created", new_interview.id)
-    return {
-        "session_id": new_interview.id, 
-        "message": "Interview session created",
-        "question_ids": question_ids
-    }
+        # Map textual difficulty from frontend (easy, medium, hard) to integer ratings expected by backend (1-5)
+        # Here we map standard 3 levels to a combination of exact numbers or ranges
+        difficulty_map = {
+            "easy": [1, 2],       # Maps to "very basic" and "easy"
+            "medium": [3, 4],     # Maps to "medium" and "hard"
+            "hard": [4, 5]        # Maps to "hard" and "expert"
+        }
+
+        number_of_questions_map = {
+            10: 5,
+            20: 8,
+            30: 10
+        }
+
+        resume = await session.get(ResumeMetadata, payload.resume_id)
+        if not resume:
+            raise HTTPException(status_code=404, detail="Resume not found")
+            
+        skills_context = resume.skills if resume.skills else ""
+
+        # Formulate the search query by combining role and skills to match seed format
+        search_query = f"Topic/Technology: {payload.role}. Skills: {skills_context}"
+        print(f"Generating questions using semantic query: '{search_query}'")
+
+        qdrant = QdrantVectorStore.from_existing_collection(
+            embedding=embeddings_model,
+            collection_name="questions",
+            url=os.getenv("QDRANT_URL"),
+            api_key=os.getenv("QDRANT_API_KEY")
+        )
+
+        try:
+            role_domain_map = {
+                "frontend": ["frontend"],
+                "backend": ["backend", "system_design", "database"],
+                "fullstack": ["backend", "frontend", "system_design", "database"]
+            }
+            role_lower=payload.role.lower()
+            domains=role_domain_map.get(role_lower, [role_lower])
+
+            domain_condition=models.Filter(
+                should=[models.FieldCondition(key="domain", match=models.MatchValue(value=d)) for d in domains]
+            )
+            
+            difficulty_int = difficulty_map.get(payload.difficulty_level.lower())
+            difficulty_condition = models.FieldCondition(
+                key="difficulty_level", 
+                match=models.MatchAny(any=difficulty_int)
+            )
+
+            main_filter=models.Filter(
+                must=[
+                    domain_condition,
+                    difficulty_condition
+                ]
+            )
+                
+            search_result = qdrant.similarity_search(query=search_query, k=number_of_questions_map.get(payload.duration, 5), filter=main_filter)
+            print("seach result:", search_result)
+            
+            question_ids = []
+            for doc in search_result:
+                 qid = doc.metadata.get("question_id") or doc.metadata.get("_id")
+                 if qid:
+                    question_ids.append(qid)
+            print(f"Found {len(question_ids)} questions")
+            
+        except Exception as e:
+            print(f"Qdrant Search Error: {e}")
+            raise HTTPException(status_code=500, detail="Error fetching questions from database")
+
+        # Create the interview session
+        new_interview = Interview(
+            user_id=user_id,
+            resume_id=payload.resume_id,
+            role=payload.role,
+            difficulty_level=payload.difficulty_level,
+            duration=payload.duration,
+            questions=question_ids, # Attached Qdrant question IDs
+            status="active"
+        )    
+        session.add(new_interview)
+        await session.commit()
+        await session.refresh(new_interview)
+        
+        return {
+            "session_id": new_interview.id, 
+            "message": "Interview session created",
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error starting interview: {e}")
+        await session.rollback()
+        raise HTTPException(status_code=500, detail="An unexpected error occurred while starting the interview session")
+
+
+#GET /api/interview/{session_id}/next-question
+
+@app.get("/api/interview/{session_id}/next-question")
+def get_next_question(
+    user_id: str = Depends(get_current_user_id),
+    session: AsyncSession = Depends(get_session),
+    session_id: str = Path(..., description="ID of the interview session")
+):
+    try:
+        #check iterview exsisted
+        interview=session.get(Interview, session_id)
+        if not interview:
+            raise HTTPException(status_code=404, detail="Interview session not found")
+
+        if interview.status!="active":
+            raise HTTPException(status_code=400, detail="Interview session is not active")
+
+        if interview.questions is None or len(interview.questions)==0:
+            raise HTTPException(status_code=400, detail="Interview session has no questions")   
+
+        if interview.status=="completed":
+            raise HTTPException(status_code=400, detail="Interview session is completed")  
+        
+        InterviewQuestion = select(InterviewQuestion).where(InterviewQuestion.session_id == session_id)
+        result = session.exec(InterviewQuestion)        
+        question = result.first()
+        
+        if not question:
+            raise HTTPException(status_code=404, detail="Question not found")
+        
+        return question
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error fatching new question: {e}")
+        raise HTTPException(status_code=500, detail="An unexpected error occurred while fetching the next question")
+
+    pass

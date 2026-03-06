@@ -13,7 +13,7 @@ class Interview(SQLModel, table=True):
     user_id: str = Field(sa_column=Column(String, index=True, nullable=False))
     resume_id: str = Field(sa_column=Column(String, index=True, nullable=False))
     role: str = Field(sa_column=Column(String, nullable=False))
-    difficulty: str = Field(sa_column=Column(String, nullable=False))
+    difficulty_level: str = Field(sa_column=Column(String, nullable=False))
     duration: Optional[int] = Field(default=None, sa_column=Column(Integer))
     questions: Optional[List[str]] = Field(default=[], sa_column=Column(ARRAY(String)))
     marks: Optional[float] = Field(default=None, sa_column=Column(Float))
