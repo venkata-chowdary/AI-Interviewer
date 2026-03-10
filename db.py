@@ -6,6 +6,7 @@ from sqlalchemy.orm import sessionmaker
 
 import os
 from dotenv import load_dotenv
+from sqlalchemy import text
 
 load_dotenv()
 DATABASE_URL = os.getenv("DATABASE_URL")
@@ -40,3 +41,15 @@ async def init_db():
     from models.question import Question
     async with engine.begin() as conn:
         await conn.run_sync(SQLModel.metadata.create_all)
+
+        await conn.execute(
+            text(
+                """
+                ALTER TABLE IF EXISTS interview
+                    ADD COLUMN IF NOT EXISTS evaluation_retry_count INTEGER NOT NULL DEFAULT 0,
+                    ADD COLUMN IF NOT EXISTS evaluation_last_error TEXT,
+                    ADD COLUMN IF NOT EXISTS evaluation_failed_at TIMESTAMPTZ,
+                    ADD COLUMN IF NOT EXISTS evaluation_lock_until TIMESTAMPTZ;
+                """
+            )
+        )

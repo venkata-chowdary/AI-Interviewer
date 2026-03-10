@@ -23,6 +23,11 @@ class Interview(SQLModel, table=True):
     status: str = Field(default="active", sa_column=Column(String, default="active"))
     created_at: datetime.datetime = Field(default_factory=datetime.datetime.utcnow, sa_column=Column(DateTime(timezone=True), server_default=func.now()))
 
+    evaluation_retry_count: int = Field(default=0, sa_column=Column(Integer, nullable=False, default=0))
+    evaluation_last_error: Optional[str] = Field(default=None, sa_column=Column(Text))
+    evaluation_failed_at: Optional[datetime.datetime] = Field(default=None, sa_column=Column(DateTime(timezone=True)))
+    evaluation_lock_until: Optional[datetime.datetime] = Field(default=None, sa_column=Column(DateTime(timezone=True)))
+
 class InterviewQuestionAttempt(SQLModel, table=True):
     __tablename__ = "interview_question_attempt"
 

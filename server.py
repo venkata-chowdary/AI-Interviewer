@@ -1,12 +1,17 @@
 from fastapi import FastAPI, UploadFile, File, Depends, Form, HTTPException, Path
+import asyncio
+import logging
 import os
 import hashlib
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from tempfile import NamedTemporaryFile
+from typing import Any, Dict, Tuple
+import time
 from sqlmodel.ext.asyncio.session import AsyncSession
 from sqlmodel import select
 from sqlalchemy import func
-from db import get_session
+from apscheduler.schedulers.background import BackgroundScheduler
+from db import get_session, init_db, async_session_factory
 from models import ResumeMetadata, Interview
 from models.interview import InterviewQuestionAttempt
 from models.question import Question
@@ -17,10 +22,51 @@ from qdrant_client import QdrantClient
 from qdrant_client.http import models
 from embeddings import embeddings_model
 from ai.service import analyse_resume, evaluate_interview
+from schemas import (
+    StartInterviewRequest,
+    RecentInterviewResponse,
+    InterviewAttemptReportItem,
+    TechSkillScore,
+    InterviewReportResponse,
+    SubmitAnswerRequest,
+)
 
 from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI()
+
+logger = logging.getLogger("ai_interviewer.cron")
+scheduler = BackgroundScheduler()
+
+
+class SimpleTTLCache:
+    def __init__(self, ttl_seconds: int, max_size: int = 256):
+        self.ttl_seconds = ttl_seconds
+        self.max_size = max_size
+        self._store: Dict[str, Tuple[float, Any]] = {}
+
+    def get(self, key: str):
+        entry = self._store.get(key)
+        if not entry:
+            return None
+        expires_at, value = entry
+        if expires_at < time.time():
+            self._store.pop(key, None)
+            return None
+        return value
+
+    def set(self, key: str, value: Any):
+        if len(self._store) >= self.max_size:
+            try:
+                first_key = next(iter(self._store.keys()))
+                self._store.pop(first_key, None)
+            except StopIteration:
+                pass
+        self._store[key] = (time.time() + self.ttl_seconds, value)
+
+
+resume_cache = SimpleTTLCache(ttl_seconds=60, max_size=512)
+recent_interviews_cache = SimpleTTLCache(ttl_seconds=10, max_size=512)
 
 app.add_middleware(
     CORSMiddleware,
@@ -41,6 +87,7 @@ def read_root():
 from fastapi import BackgroundTasks
 
 from auth.security import get_current_user_id
+from ai.service import evaluate_interview
 
 @app.post("/upload-resume")
 async def upload_resume(
@@ -118,6 +165,11 @@ async def get_my_resume(
     user_id: str = Depends(get_current_user_id),
     session: AsyncSession = Depends(get_session)
 ):
+    cache_key = f"user:{user_id}:latest_resume"
+    cached = resume_cache.get(cache_key)
+    if cached is not None:
+        return cached
+
     # Fetch the most recent resume for this user by ordering by created_at desc
     result = await session.exec(
         select(ResumeMetadata)
@@ -127,7 +179,8 @@ async def get_my_resume(
     resume = result.first()
     if not resume:
         raise HTTPException(status_code=404, detail="No resume found for this user.")
-        
+    
+    resume_cache.set(cache_key, resume)
     return resume
 
 @app.get("/api/resumes")
@@ -145,55 +198,7 @@ async def get_all_resumes(
     
     return resumes
 
-from pydantic import BaseModel
 import uuid
-
-class StartInterviewRequest(BaseModel):
-    resume_id: str
-    role: str
-    difficulty_level: str
-    duration: int
-
-
-class RecentInterviewResponse(BaseModel):
-    id: str
-    role: str
-    difficulty_level: str
-    status: str
-    score: float | None
-    selected_status: str | None
-    time_taken: int | None
-    created_at: datetime
-    questions_total: int
-    questions_answered: int
-    progress_percent: int
-
-
-class InterviewAttemptReportItem(BaseModel):
-    question_id: str
-    question_order: int
-    question_text: str | None
-    max_score: float | None
-    score: float | None
-    feedback: str | None
-    time_taken: int | None
-
-
-class InterviewReportResponse(BaseModel):
-    id: str
-    role: str
-    difficulty_level: str
-    duration: int | None
-    status: str
-    marks: float | None
-    selected_status: str | None
-    time_taken: int | None
-    created_at: datetime
-    questions_total: int
-    questions_answered: int
-    progress_percent: int
-    performance_report: dict | None
-    attempts: list[InterviewAttemptReportItem]
 
 
 @app.get("/api/interviews/recent", response_model=list[RecentInterviewResponse])
@@ -203,6 +208,11 @@ async def get_recent_interviews(
     session: AsyncSession = Depends(get_session)
 ):
     safe_limit = max(1, min(limit, 50))
+
+    cache_key = f"user:{user_id}:recent_interviews:{safe_limit}"
+    cached = recent_interviews_cache.get(cache_key)
+    if cached is not None:
+        return cached
     interviews_result = await session.exec(
         select(Interview)
         .where(Interview.user_id == user_id)
@@ -250,7 +260,7 @@ async def get_recent_interviews(
                 progress_percent=progress_percent
             )
         )
-
+    recent_interviews_cache.set(cache_key, recent_interviews)
     return recent_interviews
 
 
@@ -272,21 +282,58 @@ async def get_interview_report(
     attempts = attempts_result.all()
 
     attempt_items: list[InterviewAttemptReportItem] = []
+    # Aggregate per-technology scores based on question primary_skill
+    per_skill_scores: dict[str, dict[str, float]] = {}
+
     for attempt in attempts:
         q_stmt = select(Question).where(Question.id == attempt.question_id)
         q_result = await session.exec(q_stmt)
         question = q_result.first()
+
+        primary_skill = question.primary_skill if question else None
+        max_score = float(question.max_score) if question else None
+
         attempt_items.append(
             InterviewAttemptReportItem(
                 question_id=str(attempt.question_id),
                 question_order=attempt.question_order,
                 question_text=question.question_text if question else None,
-                max_score=float(question.max_score) if question else None,
+                max_score=max_score,
                 score=attempt.score,
                 feedback=attempt.feedback,
-                time_taken=attempt.time_taken
+                time_taken=attempt.time_taken,
+                primary_skill=primary_skill,
             )
         )
+
+        if (
+            question
+            and primary_skill
+            and attempt.score is not None
+            and max_score is not None
+            and max_score > 0
+        ):
+            entry = per_skill_scores.setdefault(
+                primary_skill, {"earned": 0.0, "max": 0.0}
+            )
+            entry["earned"] += float(attempt.score)
+            entry["max"] += max_score
+
+    tech_skill_radar: list[TechSkillScore] = []
+    for name, values in per_skill_scores.items():
+        total_max = values["max"]
+        if total_max <= 0:
+            continue
+        percent = (values["earned"] / total_max) * 100.0
+        tech_skill_radar.append(TechSkillScore(name=name, score=round(percent, 1)))
+
+    top_tech_skills: list[TechSkillScore] | None = None
+    if tech_skill_radar:
+        max_score_value = max(item.score for item in tech_skill_radar)
+        epsilon = 0.1
+        top_tech_skills = [
+            item for item in tech_skill_radar if max_score_value - item.score <= epsilon
+        ]
 
     total_questions = len(interview.questions or [])
     answered_questions = len(attempts)
@@ -306,7 +353,9 @@ async def get_interview_report(
         questions_answered=answered_questions,
         progress_percent=progress_percent,
         performance_report=interview.performance_report,
-        attempts=attempt_items
+        attempts=attempt_items,
+        tech_skill_radar=tech_skill_radar or None,
+        top_tech_skills=top_tech_skills,
     )
 
 
@@ -480,11 +529,6 @@ async def get_next_question(
         print(f"Error fetching new question: {e}")
         raise HTTPException(status_code=500, detail="An unexpected error occurred while fetching the next question")
 
-class SubmitAnswerRequest(BaseModel):
-    question_id: str
-    answer_text: str
-    time_taken: int
-
 @app.post("/api/interview/{session_id}/answer")
 async def submit_answer(
     payload: SubmitAnswerRequest,
@@ -543,3 +587,54 @@ async def submit_answer(
         print(f"Error submitting answer: {e}")
         await session.rollback()
         raise HTTPException(status_code=500, detail="An unexpected error occurred while submitting the answer")
+
+
+async def _run_evaluation_sweep(batch_size: int = 3) -> None:
+    """Simple periodic sweep to (re)enqueue interviews for evaluation."""
+    now = datetime.now(timezone.utc)
+
+    async with async_session_factory() as session:
+        stmt = (
+            select(Interview.id)
+            .where(Interview.status == "under_evaluation")
+            .where((Interview.marks == None) | (Interview.performance_report == None))
+            .where(
+                (Interview.evaluation_lock_until == None)
+                | (Interview.evaluation_lock_until < now)
+            )
+            .order_by(Interview.created_at.asc())
+            .limit(batch_size)
+        )
+
+        result = await session.exec(stmt)
+        interview_ids = result.all()
+
+    if interview_ids:
+        logger.info(
+            "evaluation_sweeper_found count=%s interview_ids=%s",
+            len(interview_ids),
+            [str(i) for i in interview_ids],
+        )
+
+    for interview_id in interview_ids:
+        logger.info("evaluation_sweeper_run interview_id=%s", str(interview_id))
+        await evaluate_interview(interview_id)
+
+
+def _evaluation_sweeper_job() -> None:
+    """APScheduler job wrapper that runs the async sweep."""
+    try:
+        asyncio.run(_run_evaluation_sweep())
+    except Exception as exc:
+        logger.exception("evaluation_sweeper_job_error err=%s", str(exc))
+
+
+@app.on_event("startup")
+async def _startup() -> None:
+    await init_db()
+    logger.info("startup: init_db done, starting APScheduler evaluation sweeper")
+
+    # Run every 30 seconds; keep config simple and adjustable via env if needed.
+    sweep_interval = int(os.getenv("EVALUATION_SWEEP_INTERVAL", "30"))
+    scheduler.add_job(_evaluation_sweeper_job, "interval", seconds=sweep_interval)
+    scheduler.start()
