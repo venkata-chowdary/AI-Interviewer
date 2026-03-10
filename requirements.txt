@@ -25,6 +25,7 @@ SQLAlchemy==2.0.45
 sqlmodel==0.0.37
 typing_extensions==4.15.0
 tzdata==2025.3
+pydantic[email]
 uvicorn==0.40.0
 apscheduler
 asyncpg
